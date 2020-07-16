@@ -45,7 +45,10 @@ func (c *Circus) shuttingDown() bool {
 
 func (c *Circus) broadcast(msg string) {
 	for _, c := range c.Clients {
-		c.writeChan <- msg
+		select {
+		case c.writeChan <- msg:
+		default:
+		}
 	}
 }
 
@@ -110,7 +113,7 @@ func (c *Circus) acceptLoop() {
 			log.Printf("Failed to accept new connection: %v\n", err)
 			continue
 		}
-		client := Client{conn: conn, writeChan: make(chan string)}
+		client := Client{conn: conn, writeChan: make(chan string, 1024)}
 		c.Clients = append(c.Clients, &client)
 		go c.handleConn(conn)
 		go c.writeLoop(client)
