@@ -18,14 +18,19 @@ type Circus struct {
 	WG           *sync.WaitGroup
 	ShutdownChan chan struct{}
 	Listener     net.Listener
-	Clients      []net.Conn
+	Clients      []*Client
+}
+
+type Client struct {
+	writeChan chan string
+	conn      net.Conn
 }
 
 func NewCircus() *Circus {
 	return &Circus{
 		WG:           &sync.WaitGroup{},
 		ShutdownChan: make(chan struct{}),
-		Clients:      make([]net.Conn, 0),
+		Clients:      make([]*Client, 0),
 	}
 }
 
@@ -35,6 +40,12 @@ func (c *Circus) shuttingDown() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (c *Circus) broadcast(msg string) {
+	for _, c := range c.Clients {
+		c.writeChan <- msg
 	}
 }
 
@@ -57,11 +68,24 @@ func (c *Circus) handleConn(conn net.Conn) {
 		if command == "STOP" {
 			break
 		} else {
-			conn.Write([]byte(command + "\n"))
+			c.broadcast(command)
 		}
 	}
 	if err := conn.Close(); err != nil {
 		fmt.Printf("Error closing connection :%v\n", err)
+	}
+}
+
+func (c *Circus) writeLoop(client Client) {
+	c.WG.Add(1)
+	defer c.WG.Done()
+	for {
+		select {
+		case msg := <-client.writeChan:
+			client.conn.Write([]byte(msg + "\n"))
+		case <-c.ShutdownChan:
+			return
+		}
 	}
 }
 
@@ -86,8 +110,10 @@ func (c *Circus) acceptLoop() {
 			log.Printf("Failed to accept new connection: %v\n", err)
 			continue
 		}
-		c.Clients = append(c.Clients, conn)
+		client := Client{conn: conn, writeChan: make(chan string)}
+		c.Clients = append(c.Clients, &client)
 		go c.handleConn(conn)
+		go c.writeLoop(client)
 	}
 }
 
@@ -99,8 +125,8 @@ func (c *Circus) shutdown(sigs chan os.Signal) {
 	close(sigs)
 	close(c.ShutdownChan)
 
-	for _, conn := range c.Clients {
-		if err := conn.Close(); err != nil {
+	for _, client := range c.Clients {
+		if err := client.conn.Close(); err != nil {
 			fmt.Printf("Error closing connection :%v\n", err)
 		}
 	}
